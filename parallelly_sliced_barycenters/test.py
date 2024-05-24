@@ -57,6 +57,16 @@ class Test():
         self.plot(**kwargs)
 
 def logspace2_man(a, b=None):
+    """Creates a torch array of integers approximately equally spaced on the logarthimic
+    scale, but restricted to the form 1e?, 2e? or 5e?
+
+    Args:
+        a (int): Beginning of the array (or end if b is not given).
+        b (int, optional): End of the array (included). Defaults to None.
+
+    Returns:
+        Tensor: dimension 1 and dtypes int
+    """
     if b is None:
         deb = 1
         fin = a

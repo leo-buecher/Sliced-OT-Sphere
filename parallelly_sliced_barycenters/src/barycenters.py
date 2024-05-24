@@ -3,7 +3,7 @@ import numpy as np
 from math import ceil, sqrt
 from scipy.stats import linregress
 
-from src.manifold import SlicedManifold
+from src.manifold import SlicedManifold, Manifold
 import ot
 from utils import unsqueeze, tqdm
 
@@ -361,7 +361,7 @@ class LSWBarycenter():
             Y (Tensor | list of tensors): Tensor of shape (M, N, *ms) or list of length M, of tensors of shapes (N_j, *ms).
                 Sets of points representing the M measures of which we want to compute the barycentre.
                 Complexity is bigger in the case of a list.
-            lambdas (Tensor): Shape (M,). Weights of the barycentre.
+            lambdas (Tensor | None): Shape (M,). Weights of the barycentre. If None, set to torch.ones((M,)).
             X0 (Tensor): Shape (N, *ms). Source measure (initial value of the approximating sequence).
             n_psis (int): Number of slices
             tau_init (float): Learning rate or initial learning rate.
@@ -440,8 +440,8 @@ class LSWBarycenter():
 
         return self
     
-    def plot_samples(self, depthshade=True):
-        self.sman.plot_samples(self.measures, self.barycenter, depthshade=depthshade)
+    def plot_samples(self, depthshade=True, **kwargs):
+        self.sman.plot_samples(self.measures, self.barycenter, depthshade=depthshade, **kwargs)
 
 
 
@@ -611,7 +611,7 @@ class ESWBarycenter():
         Args:
             X (Tensor): Shape (N, *ms). Coordinates of the points of the fixed support.
             V (Tensor): Shape (M, N). Weights of the measures for which to compute the barycentre.
-            lambdas (Tensor): Shape (M,). Coefficients in the barycentre.
+            lambdas (Tensor | None): Shape (M,). Coefficients in the barycentre.  If None, set to torch.ones((M,)).
             W0 (Tensor): Shape (N,). Initial point (expressed with weights).
             n_psis (int): Number of slices (i.e. of projections).
             tau_init (float): Initial value of the learning rate.
@@ -679,7 +679,42 @@ class ESWBarycenter():
     
 
 
-# Wasserstein barycentre. Only on the sphere !!! #! Change this
+# Wasserstein barycentre. 
+
+class LWBarycenter():
+    def __init__(self, man:Manifold):
+        self.man = man
+
+        self.measures = None
+        self.lambdas = None
+        self.barycenter = None
+    
+    def fit(self, Y, lambdas):
+        # Only works with 2 measures with the same number of points
+        self.measures = Y
+        lambdas = lambdas if lambdas is not None else 1/2 * torch.ones((2,))
+        self.lambdas = lambdas
+
+        N = Y.size(1)
+        C = self.man.dist(Y[0][:, None], Y[1][None, :])
+        P = torch.tensor(ot.emd(np.ones((N,)), np.ones((N,)), C.numpy()))
+
+        P_int = torch.round(P).long()
+        assert torch.all(P_int.sum(0) == 1) and torch.all(P_int.sum(1) == 1), "This is not a transport map"
+
+        T = torch.nonzero(P_int)[:, 1]
+
+        logs = self.man.logarithm(Y[0], Y[1, T])
+        self.barycenter = self.man.exponential(Y[0], lambdas[1] * logs)
+
+    def plot_samples(self, depthshade=True, **kwargs):
+        self.man.plot_samples(self.measures, self.barycenter, depthshade=depthshade, **kwargs)
+
+
+
+
+
+# Eulerian Wasserstein barycentres. Only on the sphere !!! #! Change this
 class WBarycenter():
     """Computes the Wasserstein barycenter on the sphere using POT library."""
     def __init__(self):
@@ -723,4 +758,33 @@ class WRegBarycenter():
         costs = spherical_distances ** 2
         self.barycenter = ot.bregman.barycenter(V.T, costs, reg, lambdas, verbose=verbose)
         return self
+
+def wdist(point_cloud1, point_cloud2, space="euclidean"):
+    """Computes the euclidean Wasserstein distance between two point clouds
+
+    Args:
+        point_cloud1 (array | Tensor): Shape (N1, *ms). First point cloud.
+        point_cloud2 (array | Tensor): Shape (N2, *ms). Second point cloud.
+
+    Returns:
+        float: Euclidean wasserstein distance.
+    """
+    if type(point_cloud1) == torch.Tensor:
+        point_cloud1 = point_cloud1.numpy()
+    if type(point_cloud2) == torch.Tensor:
+        point_cloud2 = point_cloud2.numpy()
+
+    if space == "so3":
+        sca_prod = np.sum(point_cloud1[:, None] * point_cloud2[None, :], axis=(-2, -1))
+        M = np.arccos((sca_prod - 1)/2)
+    elif space == "sd":
+        sca_prod = np.sum(point_cloud1[:, None] * point_cloud2[None, :], axis=(-2, -1))
+        M = np.arccos(sca_prod)
+    else:
+        M = ot.dist(point_cloud1, point_cloud2)
+
+    N1 = len(point_cloud1)
+    N2 = len(point_cloud2)
+    w_dist= ot.emd2(np.ones((N1,)), np.ones((N2,)), M)
+    return w_dist
 

@@ -1,10 +1,12 @@
 import torch
 from math import sqrt, pi
+torch.set_default_device('cpu')
 
 import matplotlib.pyplot as plt
 import time
+import cProfile
 
-from src.sphere2 import Sphere, ScaSphere, UniformSphere, UniformPortionSphere, VMFSphere, SmileySphere, SphereDiscretisation
+from src.sphere import Sphere2, ScaSphere2, UniformSphere, UniformPortionSphere, VMFSphere, SmileySphere, SphereDiscretisation
 from src.barycenters import LSWBarycenter, ESWBarycenter, WBarycenter, WRegBarycenter
 from src.ssb import SSWBarycenter
 
@@ -21,7 +23,7 @@ sys.excepthook = ultratb.FormattedTB(color_scheme='Linux', call_pdb=False)
 
 def expe(Y, n_psis=1000, max_iter=1000, X0=None, lambdas=None, tau=0.5):
     """Computes the LPSBarycenter of the given measures on the sphere, plot it and displays the loss evolution"""
-    sca_sphere = ScaSphere()
+    sca_sphere = ScaSphere2()
     swb = LSWBarycenter(sca_sphere)
     if X0 is None:
         X0 = sca_sphere.sample_uniform(Y.shape[1])
@@ -53,7 +55,7 @@ def test_sliced_barycenter2(N=50, n_psis=500, max_iter=1000, tau=2):
     else:
         Nx = N
     
-    sca_sphere = ScaSphere()
+    sca_sphere = ScaSphere2()
     swb = LSWBarycenter(sca_sphere)
     coords = torch.tensor([[1, 1, 0], [1, -1, 0]], dtype=torch.float)/sqrt(2)
     kappas = torch.tensor([100, 100], dtype=torch.float)
@@ -108,14 +110,14 @@ class TauExpe(Test):
     
     def run(self):
         self.node = platform_node()
-        sphere = Sphere()
+        sphere = Sphere2()
         coords = torch.tensor([[1, 1, 0], [1, -1, 0]], dtype=torch.float)/sqrt(2)
         kappas = torch.tensor([100, 100], dtype=torch.float)
         Y = sphere.sample_vMF(coords, kappas, self.N)
 
         X0 = sphere.sample_uniform(self.N)
         for tau in tqdm(self.tau_values):
-            swb = LSWBarycenter(ScaSphere()) if self.method=="paral" else SSWBarycenter()
+            swb = LSWBarycenter(ScaSphere2()) if self.method=="paral" else SSWBarycenter()
             swb.fit(Y, None, X0, n_psis=self.n_psis, tau_init=tau, max_iter=self.max_iter, tqdm_leave=False, stop=self.stop)
             self.Ls_loss.append(swb.L_loss)
             self.Ls_diff.append(swb.L_step)
@@ -196,14 +198,14 @@ class TauDecLagranExpe(Test):
     
     def run(self):
         self.node = platform_node()
-        sphere = Sphere()
+        sphere = Sphere2()
         coords = torch.tensor([[1, 1, 0], [1, -1, 0]], dtype=torch.float)/sqrt(2)
         kappas = torch.tensor([100, 100], dtype=torch.float)
         Y = sphere.sample_vMF(coords, kappas, self.N)
 
         X0 = sphere.sample_uniform(self.N)
         for tau_init, a_tau, pow_tau in zip(tqdm(self.tau_values), self.a_values, self.pow_values):
-            swb = LSWBarycenter(ScaSphere()) if self.method=="paral" else SSWBarycenter()
+            swb = LSWBarycenter(ScaSphere2()) if self.method=="paral" else SSWBarycenter()
             swb.fit(Y, None, X0, n_psis=self.n_psis, tau_init=tau_init, max_iter=self.max_iter, a_tau=a_tau, pow_tau=pow_tau, tqdm_leave=False, stop=False)
             self.Ls_loss.append(swb.L_loss)
             self.Ls_diff.append(swb.L_step)
@@ -263,7 +265,7 @@ class TauDecEulerExpe(Test):
             for j, a in enumerate(tqdm(self.a_values, leave=False)):
                 for k, tau_init in enumerate(tqdm(self.tau_init_values, leave=False)):
                     if pow > 0 or j == 0:
-                        eswb = ESWBarycenter(ScaSphere())
+                        eswb = ESWBarycenter(ScaSphere2())
                         eswb.fit(X, V, None, W0, n_psis=self.n_psis, tau_init=tau_init, max_iter=self.max_iter, a_tau=a, pow_tau=pow, stop=False, tqdm_leave=False)
                         self.L_losses[i, j, k, :] = torch.Tensor(eswb.L_loss)
                         self.L_step_norms[i, j, k, :] = torch.Tensor(eswb.L_step)
@@ -307,12 +309,13 @@ class ConvergenceExpe(Test):
     - with centers Phi(pi/4, pi/2), Phi(-pi/4, pi/2)
     - and kappa=100
     """
-    def __init__(self, N=50, n_psis=500, max_iter=1000, tau=[20, 50]):
+    def __init__(self, N=50, n_psis=500, max_iter=1000, tau=[20, 50], repetitions=5):
         super().__init__()
         self.N = N
         # N: int or tuple (Nx, list [Nx_j for j])
         self.n_psis=n_psis
         self.max_iter=max_iter
+        self.repetitions=repetitions
         if type(tau) != list:
             self.tau = [tau, tau]
         else:
@@ -321,20 +324,20 @@ class ConvergenceExpe(Test):
         self.measures = None
         self.X0 = None
         self.pbarycenter = None
-        self.pL_loss = None
-        self.pL_step = None
+        self.pL_loss = torch.zeros((max_iter,repetitions))
+        self.pL_step = torch.zeros((max_iter,repetitions))
         self.sbarycenter = None
-        self.sL_loss = None
-        self.sL_step = None
+        self.sL_loss = torch.zeros((max_iter,repetitions))
+        self.sL_step = torch.zeros((max_iter,repetitions))
         
     
     @property
     def name(self):
-        return f"expe_cvrg_N{self.N}_n{self.n_psis}_mi{self.max_iter}_tau{self.tau[0]}-{self.tau[1]}"
+        return f"expe_cvrg_N{self.N}_n{self.n_psis}_mi{self.max_iter}_tau{self.tau[0]}-{self.tau[1]}_{self.repetitions}runs"
 
     def run(self):
         self.node = platform_node()
-        sphere = Sphere()
+        sphere = Sphere2()
 
         # rewriting input parameters
         gnrl = type(self.N)== tuple #whether to used the generalised algorithm version
@@ -352,49 +355,52 @@ class ConvergenceExpe(Test):
         else:
             self.measures = sphere.sample_vMF(coords, kappas, self.N)
 
-        # defining initialisation
-        self.X0 = sphere.sample_uniform(Nx)
+        for k in range(self.repetitions):
+            # defining initialisation
+            self.X0 = sphere.sample_uniform(Nx)
 
-        # running experiments
-        psb = LSWBarycenter(ScaSphere())
-        ssb = SSWBarycenter()
-        psb.fit( self.measures, None, self.X0, n_psis=self.n_psis, tau_init=self.tau[0], max_iter=self.max_iter)
-        ssb.fit(self.measures, None, self.X0, n_psis=self.n_psis, tau_init=self.tau[1], max_iter=self.max_iter)
+            # running experiments
+            psb = LSWBarycenter(ScaSphere2())
+            ssb = SSWBarycenter()
+            psb.fit(self.measures, None, self.X0, n_psis=self.n_psis, tau_init=self.tau[0], max_iter=self.max_iter, stop=False)
+            ssb.fit(self.measures, None, self.X0, n_psis=self.n_psis, tau_init=self.tau[1], max_iter=self.max_iter, stop=False)
 
-        # saving results
-        self.pbarycenter = psb.barycenter
-        self.pL_loss = psb.L_loss
-        self.pL_step = psb.L_step
-        self.sbarycenter = ssb.barycenter
-        self.sL_loss = ssb.L_loss
-        self.sL_step = ssb.L_step
+            # saving results
+            self.pbarycenter = psb.barycenter
+            self.pL_loss[:,k] = torch.tensor(psb.L_loss)
+            self.pL_step[:,k] = torch.tensor(psb.L_step)
+            self.sbarycenter = ssb.barycenter
+            self.sL_loss[:,k] = torch.tensor(ssb.L_loss)
+            self.sL_step[:,k] = torch.tensor(ssb.L_step)
 
         self.completed = True
     
     def plot(self):
         # print parameters
-        for k in ["node", "N", "n_psis", "max_iter", "tau"]:
+        for k in ["node", "N", "n_psis", "max_iter", "tau", "repetitions"]:
             print(f"{k:8}: {repr2(self.__getattribute__(k))}")
         
         # plot results
-        sphere = Sphere()
+        sphere = Sphere2()
         # sphere.plot_samples(self.measures, self.X0)
-        sphere.plot_samples(self.measures, self.pbarycenter)
-        sphere.plot_samples(self.measures, self.sbarycenter)
+        # sphere.plot_samples(self.measures, self.pbarycenter)
+        # sphere.plot_samples(self.measures, self.sbarycenter)
 
         plt.figure(self.name + "_loss")
-        plt.plot(self.pL_loss, label="Parallel")
-        plt.plot(8.5*torch.tensor(self.sL_loss), label="Semi-circular")
-        # for i in range(50):
-        #     plt.axhline(1/4 * swb.sliced_dist_square(swb.sample_uniform(n_psis), Y[0], Y[1]), c="r", lw=0.5)
+        #plt.plot(torch.mean(self.pL_loss,dim=1), label="Parallel")
+        plt.errorbar(range(self.max_iter), torch.mean(self.pL_loss,dim=1), torch.std(self.pL_loss,dim=1), linestyle='None', marker='d', label="Parallel")
+        #plt.plot(8.5*torch.mean(self.sL_loss,dim=1), label="Semi-circular")
+        plt.errorbar(range(self.max_iter), torch.mean(8.5*self.sL_loss,dim=1), torch.std(8.5*self.sL_loss,dim=1), linestyle='None', marker='d', label="Semi-circular")
         plt.legend()
         # plt.title("(Rescaled) Loss evolution over the iterations")
         plt.grid()
         plt.show()
 
         plt.figure(self.name + "_step")
-        plt.plot(self.pL_step, label="Parallel")
-        plt.plot(self.sL_step, label="Semi-circular")
+        #plt.plot(torch.mean(self.pL_step,dim=1), label="Parallel")
+        #plt.plot(torch.mean(self.sL_step,dim=1), label="Semi-circular")
+        plt.errorbar(range(self.max_iter), torch.mean(self.pL_step,dim=1), torch.std(self.pL_step,dim=1), linestyle='None', marker='d', label="Parallel")
+        plt.errorbar(range(self.max_iter), torch.mean(self.sL_step,dim=1), torch.std(self.sL_step,dim=1), linestyle='None', marker='d', label="Semi-circular")
         plt.legend()
         # plt.title("Step norm for each iteration")
         plt.grid()
@@ -404,7 +410,7 @@ class ConvergenceExpe(Test):
 class TimeExpe(Test):
     """Compare the execution times of the LPSB and SSB algorithms with the same number of iterations, for the case of 2 vMF distributions,
     in terms of influence of the number N of points and the number n_psi of slices."""
-    def __init__(self, N_def=40, N_max=100, n_psis_def=200, n_psis_max=500, max_iter=100):
+    def __init__(self, N_def=40, N_max=100, n_psis_def=200, n_psis_max=500, max_iter=100, repetitions=1):
         super().__init__()
         self.N_def = N_def
         self.N_max = N_max
@@ -412,88 +418,95 @@ class TimeExpe(Test):
         self.n_psis_max = n_psis_max
         self.max_iter = max_iter
         self.tau = 20
+        self.repetitions = repetitions
 
         self.N_values = logspace2_man(N_max*2)
         self.n_psis_values = logspace2_man(n_psis_max*2)
-        self.times_N = torch.zeros((len(self.N_values), 3))
-        self.times_n_psis = torch.zeros((len(self.n_psis_values), 3))
+        self.times_N = torch.zeros((len(self.N_values), 2, self.repetitions), device='cpu')
+        self.times_n_psis = torch.zeros((len(self.n_psis_values), 2, self.repetitions), device='cpu')
     
     @property
     def name(self):
-        return f"expe_time_N{self.N_def}-{self.N_max}_n{self.n_psis_def}-{self.n_psis_max}_mi{self.max_iter}"
+        return f"expe_time_N{self.N_def}-{self.N_max}_n{self.n_psis_def}-{self.n_psis_max}_mi{self.max_iter}_{self.repetitions}runs"
     
     def run(self):
         self.node = platform_node()
-        sphere = Sphere()
+        sphere = Sphere2()
         ssb = SSWBarycenter()
-        psb = LSWBarycenter(ScaSphere())
+        psb = LSWBarycenter(ScaSphere2())
 
         coords = torch.tensor([[1, 1, 0], [1, -1, 0]], dtype=torch.float)/sqrt(2)
         kappas = torch.tensor([100, 100], dtype=torch.float)
 
-        for i, N in enumerate(tqdm(self.N_values)):
-            X0 = sphere.sample_uniform(N)
-            Y = sphere.sample_vMF(coords, kappas, N)
-
-            t0 = time.time()
-            psb.fit(Y, None, X0, n_psis=self.n_psis_def, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False)
-            t1 = time.time()
-            self.times_N[i, 0] = t1 - t0
-
-            Y = [Y[j] for j in range(2)]
-            t0 = time.time()
-            psb.fit(Y, None, X0, n_psis=self.n_psis_def, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False)
-            t1 = time.time()
-            self.times_N[i, 1] = t1 - t0
-
-            t0 = time.time()
-            ssb.fit(Y, None, X0, n_psis=self.n_psis_def, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False)
-            t1 = time.time()
-            self.times_N[i, 2] = t1 - t0
-        
-        X0 = sphere.sample_uniform(self.N_def)
-        Y = sphere.sample_vMF(coords, kappas, self.N_def)
-        for i, n_psis in enumerate(tqdm(self.n_psis_values)):
-
-            t0 = time.time()
-            psb.fit(Y, None, X0, n_psis=n_psis, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False)
-            t1 = time.time()
-            self.times_n_psis[i, 0] = t1 - t0
-
-            Y = [Y[j] for j in range(2)]
-            t0 = time.time()
-            psb.fit(Y, None, X0, n_psis=n_psis, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False)
-            t1 = time.time()
-            self.times_n_psis[i, 1] = t1 - t0
-
-            t0 = time.time()
-            ssb.fit(Y, None, X0, n_psis=n_psis, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False)
-            t1 = time.time()
-            self.times_n_psis[i, 2] = t1 - t0
-            Y = torch.stack(Y)
+        for r in range(self.repetitions):
+            for i, N in enumerate(tqdm(self.N_values)):
+                X0 = sphere.sample_uniform(N)
+                Y = sphere.sample_vMF(coords, kappas, N)
+  
+                t0 = time.time()
+                psb.fit(Y, None, X0, n_psis=self.n_psis_def, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False, stop=False)
+                t1 = time.time()
+                self.times_N[i, 0, r] = t1 - t0
+  
+                #Y = [Y[j] for j in range(2)]
+                #t0 = time.time()
+                #psb.fit(Y, None, X0, n_psis=self.n_psis_def, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False, stop=False)
+                #t1 = time.time()
+                #self.times_N[i, 1, r] = t1 - t0
+  
+                t0 = time.time()
+                #cProfile.runctx("ssb.fit(Y, None, X0, n_psis=self.n_psis_def, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False, stop=False)", None, locals())
+                ssb.fit(Y, None, X0, n_psis=self.n_psis_def, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False, stop=False)
+                t1 = time.time()
+                self.times_N[i, 1, r] = t1 - t0
+          
+            X0 = sphere.sample_uniform(self.N_def)
+            Y = sphere.sample_vMF(coords, kappas, self.N_def)
+            for i, n_psis in enumerate(tqdm(self.n_psis_values)):
+  
+                t0 = time.time()
+                psb.fit(Y, None, X0, n_psis=n_psis, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False, stop=False)
+                t1 = time.time()
+                self.times_n_psis[i, 0, r] = t1 - t0
+  
+                #Y = [Y[j] for j in range(2)]
+                #t0 = time.time()
+                #psb.fit(Y, None, X0, n_psis=n_psis, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False, stop=False)
+                #t1 = time.time()
+                #self.times_n_psis[i, 1, r] = t1 - t0
+  
+                t0 = time.time()
+                ssb.fit(Y, None, X0, n_psis=n_psis, tau_init=self.tau, max_iter=self.max_iter, tqdm_leave=False, stop=False)
+                t1 = time.time()
+                self.times_n_psis[i, 1, r] = t1 - t0
+                #Y = torch.stack(Y)
         self.completed = True
     
     def plot(self):
         # print parameters
-        for k in ["node", "N_def", "N_max", "n_psis_def", "n_psis_max", "max_iter", "tau"]:
+        for k in ["node", "N_def", "N_max", "n_psis_def", "n_psis_max", "max_iter", "tau", "repetitions"]:
             print(f"{k:10}: {repr(self.__getattribute__(k))}")
         
         # plot results
         plt.figure(f"{self.name}_wrt_N")
-        plt.loglog(self.N_values, self.times_N[:, 0], label="Parallel")
+        t_N_mean = self.times_N.mean(dim=2)
+        plt.loglog(self.N_values.cpu(), t_N_mean[:, 0], label="Parallel")
         # plt.loglog(self.N_values, self.times_N[:, 1], label="Generalised parallel")
-        plt.loglog(self.N_values, self.times_N[:, 2], label="Semi-circular")
+        plt.loglog(self.N_values.cpu(), t_N_mean[:, 1], label="Semi-circular")
         # plt.loglog(self.N_values, 0.03*self.N_values)
         plt.legend()
         plt.grid(True, which="both")
         plt.xlabel("N")
         plt.ylabel("Time (s)")
         plt.show()
+        print(self.times_N.mean(dim=2))
+        print(self.times_N.std(dim=2))
 
         plt.figure(f"{self.name}_wrt_npsi")
-        plt.loglog(self.n_psis_values, self.times_n_psis[:, 0], label="Parallel")
+        t_psis_mean = self.times_n_psis.mean(dim=2)
+        plt.loglog(self.n_psis_values.cpu(), t_psis_mean[:, 0], label="Parallel")
         # plt.loglog(self.n_psis_values, self.times_n_psis[:, 1], label="Generalised parallel")
-        plt.loglog(self.n_psis_values, self.times_n_psis[:, 2], label="Semi-circular")
+        plt.loglog(self.n_psis_values.cpu(), t_psis_mean[:, 1], label="Semi-circular")
         plt.legend()
         plt.grid(True, which="both")
         plt.xlabel("P")
@@ -547,7 +560,7 @@ class ShapeExpe(Test):
 
         param_to_measure = lambda param: (VMFSphere if param[0] == "vMF" else UniformPortionSphere)(*param[1:])
         
-        sphere = Sphere()
+        sphere = Sphere2()
         self.X0 = sphere.sample_uniform(Nx)
         # for m1, m2 in measures_pairs:
         for name, (input1, input2) in self.input_params.items():
@@ -558,7 +571,7 @@ class ShapeExpe(Test):
                 Y = torch.stack(Y)
             self.Y_list[name] = Y
 
-            psb = LSWBarycenter(ScaSphere())
+            psb = LSWBarycenter(ScaSphere2())
             ssb = SSWBarycenter()
 
             t0 = time.time()
@@ -576,7 +589,7 @@ class ShapeExpe(Test):
         self.completed = True
     
     def plot(self):
-        sphere = Sphere()
+        sphere = Sphere2()
 
         #print parameters and time results
         for k in ["node", "N", "n_psis", "max_iter", "tau", "times"]:
@@ -632,7 +645,7 @@ class EPSBExpe(Test):
         
     def run(self):
         self.node = platform_node()
-        eswb = ESWBarycenter(ScaSphere())
+        eswb = ESWBarycenter(ScaSphere2())
 
         # torch.manual_seed(0)
         # X = sphere.sample_uniform(N)
@@ -773,7 +786,7 @@ class BenchmarkExpe(Test):
         else:
             raise ValueError(f"{self.inputs} is not a valid name of input settings")
 
-        sca_sphere = ScaSphere()
+        sca_sphere = ScaSphere2()
         lpsb = LSWBarycenter(sca_sphere)
         lssb = SSWBarycenter()
         epsb = ESWBarycenter(sca_sphere)
@@ -857,7 +870,7 @@ class BenchmarkExpe(Test):
 #####################################################################################
 
 if __name__ == "__main__":
-    sca_sphere = ScaSphere()
+    sca_sphere = ScaSphere2()
 
     from argparse import ArgumentParser
 
@@ -892,15 +905,18 @@ if __name__ == "__main__":
     elif test_name == "convergence": 
         # Comparison of convergence on the basic case of 2 vMF shifted by an angle of pi/2, 
         # and with kappa = 100
-        expe_convergence = ConvergenceExpe(N=50, n_psis=500, max_iter=1000, tau=[20, 50])
+        # expe_convergence = ConvergenceExpe(N=50, n_psis=500, max_iter=80, tau=[20, 50], repetitions=5) #article
+        expe_convergence = ConvergenceExpe(N=20, n_psis=100, max_iter=80, tau=[50, 50], repetitions=5)
         expe_convergence.whole(save=True)
 
     elif test_name == "time":
-        expe_time = TimeExpe(N_def=40, N_max=5000, n_psis_def=200, n_psis_max=5000, max_iter=20)
+        expe_time = TimeExpe(N_def=40, N_max=5000, n_psis_def=200, n_psis_max=5000, max_iter=20, repetitions=1) #article
+        #expe_time = TimeExpe(N_def=40, N_max=200, n_psis_def=100, n_psis_max=200, max_iter=20, repetitions=2)
         expe_time.whole(save=True)
 
     elif test_name == "shape":
-        expe_shape = ShapeExpe(N=200, n_psis=500, max_iter=1000, tau=[40, 80])
+        # expe_shape = ShapeExpe(N=200, n_psis=500, max_iter=1000, tau=[40, 80]) # article
+        expe_shape = ShapeExpe(N=50, n_psis=100, max_iter=100, tau=[40, 80])
         expe_shape.whole(save=True)
     
     elif test_name == "epsb":
@@ -908,7 +924,8 @@ if __name__ == "__main__":
         expe_epsb.whole(save=True, representation = "3d")
 
     elif test_name == "benchmark":
-        expe_benchmark = BenchmarkExpe(inputs="SmileyVMF", N=200, N1=150, N2=50, n_psis=100, reg=5e-2)
+        # expe_benchmark = BenchmarkExpe(inputs="SmileyVMF", N=200, N1=150, N2=50, n_psis=100, reg=5e-2) #article
+        expe_benchmark = BenchmarkExpe(inputs="SmileyVMF", N=50, N1=150, N2=50, n_psis=100, reg=5e-2)
         expe_benchmark.whole(save=True, projection="3d")
 
     else:

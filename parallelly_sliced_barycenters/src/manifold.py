@@ -17,63 +17,89 @@ class Manifold(ABC):
 
     @abstractmethod
     def projection_tangent_space(self, X, dX):
-        """Projects a vector onto the tangential space
+        """Projects a vector onto the tangential space.
         
         Args:
-            X (Tensor): Shape (*Ns, *ms). The vectors in which to consider the tangential spaces.
-            dX (Tensor): Shape (*Ns, *ms). The vectors to project to the tangential spaces. (We actually
-                project X + dX)
+            X (Tensor): Shape (*bs, *ms). The points in which to consider the tangential spaces.
+            dX (Tensor): Shape (*bs, *ms). The vectors to project to the tangential spaces. 
         
         Returns:
-            dX_p (Tensor): Shape (*Ns, *ms). The vectors belonging to the tangential spaces.
+            dX_p (Tensor): Shape (*bs, *ms). The vectors belonging to the tangential spaces.
         """
         pass
 
     @abstractmethod
     def exponential(self, X, dX):
-        """Takes a vector from the tangential space to the manifold
+        """Takes a vector from the tangential space to the manifold.
 
         Args:
-            X (Tensor): Shape (*Ns, *ms). The vectors of reference.
-            dX (Tensor): Shape (*Ns, *ms). The tangential vectors, as produced by self.projection_tangent_space
+            X (Tensor): Shape (*bs, *ms). The points of reference on the manifold.
+            dX (Tensor): Shape (*bs, *ms). The tangential vectors, as produced by self.projection_tangent_space.
         
         Returns:
-            X_new (Tensor): Shape (*Ns, *ms). The new vectors of the manifold corresponding to the 
+            X_new (Tensor): Shape (*bs, *ms). The new points of the manifold corresponding to the 
                 exponential of each dX in each X.
+        """
+        pass
+
+    @abstractmethod
+    def logarithm(self, X0, X1):
+        """Computes the/a logarithm of an element X1 relatively to element X0.
+
+        Args:
+            X0 (Tensor): Shape (*bs, *ms). The points of reference on the manifold.
+            X1 (Tensor): Shape (*bs, *ms). The points to compute the/a logarithm of.
+
+        Returns:
+            Tensor: Shape (*bs, *ms). The vectors, in the tangent space of X0, corresponding to 
+                the logarithm map of X1 relatively to X0.
         """
         pass
     
     @abstractmethod
     def projection_manifold(self, X):
-        """Projects a vector on the manifold
+        """Projects a vector on the manifold.
         
         Args:
-            X (Tensor): Shape (*Ns, *ms). The vectors to project on the manifold.
+            X (Tensor): Shape (*bs, *ms). The vectors to project on the manifold.
         
         Returns:
-            X_new (Tensor): Shape (*Ns, *ms). The projected vectors.
+            X_new (Tensor): Shape (*bs, *ms). The projected vectors.
         """
         pass
     
     @abstractmethod
     def parametrisation(self, A):
-        """Returns a vector on the manifold from a vector in R^d
+        """Returns a point on the manifold from a point in R^q.
         
         Args:
-            A (Tensor): Shape (*As, d) where d is the dimension of the coordinate space. Coordinates of
-                parametrised points
+            A (Tensor): Shape (*bs, q) where q is the dimension of the coordinate space. Coordinates of
+                parametrised points.
         
         Returns:
-            X (Tensor): Shape (*As, *ms). Points on the manifold.
+            X (Tensor): Shape (*bs, *ms). Points on the manifold.
         """
         pass
+
+    @abstractmethod
+    def inverse_parametrisation(self, X):
+        """Given points on the manifolds, returns the coordinates of the points in the coordinate 
+            space. It is the inverse function of self.parametrisation.
+
+        Args:
+            X (Tensor): Shape (*bs, *ms). Points on the manifold.
+
+        Returns:
+            A (Tensor): Shape (*bs, q) where q is the dimension of the coordinate space. Coordinates of 
+                the parametrised points.
+        """
     
     @abstractmethod
     def sample_uniform(self, n):
-        """Returns a sample from the uniform probability distribution on the manifold
+        """Returns a sample from the uniform probability distribution on the manifold.
         
         Args:
-            n (int): number of samples
+            n (int): Number of samples.
         
         Returns:
             X (Tensor): Shape (n, *ms). Points on the manifold, uniformely distributed.
@@ -86,9 +112,9 @@ class Manifold(ABC):
         parallelepipedeon in the coordinate space.
         
         Args:
-            bounds (Tensor): Shape (d, 2) where d is the dimension of the coordinate space. 
-                The bounds (min, max) for each of the d coordinates.
-            n (int): number of samples
+            bounds (Tensor): Shape (q, 2) where q is the dimension of the coordinate space. 
+                The bounds (min, max) for each of the q coordinates.
+            n (int): Number of samples.
         
         Returns:
             X (Tensor): Shape (n, *ms). Points on the manifold uniformely distributed in the portion 
@@ -97,35 +123,35 @@ class Manifold(ABC):
         pass
     
     def sample_projected_gaussian(self, coords, stds, N):
-        """Generates one a several samples of gaussians projected on the manifold.
+        """Generates one or several samples of gaussians projected on the manifold.
 
         Args:
-            coords (Tensor, np.ndarray, list): Shape (*Ys, *ms). Coordinates of the center(s) of the gaussian(s).
-            stds (Tensor, np.ndarray, list, int): Shape (*s) where Ys=(..., *s).
+            coords (Tensor, np.ndarray, list): Shape (*bs, *ms). Coordinates of the center(s) of the gaussian(s).
+            stds (Tensor, np.ndarray, list, int): Shape (*s) such that bs=(..., *s).
                 Standard deviations of the different gaussians.
-            N (int): number of samples in each set.
+            N (int): Number of samples in each set.
 
         Returns:
-            Tensor: Shape (*Ys, N, *ms)
+            Tensor: Shape (*bs, N, *ms)
         """
         if type(coords) != torch.Tensor:
             coords = torch.tensor(coords, dtype=torch.float)
         # M = coords.shape[0]
-        Ys = coords.shape[:-self.ndim]
-        coords = unsqueeze(coords, len(Ys), 1)
+        bs = coords.shape[:-self.ndim]
+        coords = unsqueeze(coords, len(bs), 1)
 
         if type(stds) != torch.Tensor:
             stds = torch.tensor(stds, dtype=torch.float)
-        stds = unsqueeze(stds, 0, len(Ys) - stds.ndim) # broadcastable to (*Ys,)
-        stds = unsqueeze(stds, -1, 1 + self.ndim) # broadcastable to (*Ys, N, *ms)
+        stds = unsqueeze(stds, 0, len(bs) - stds.ndim) # broadcastable to (*bs,)
+        stds = unsqueeze(stds, -1, 1 + self.ndim) # broadcastable to (*bs, N, *ms)
 
-        Y = (torch.randn(*Ys, N, *self.ms) * stds) + coords
+        Y = (torch.randn(*bs, N, *self.ms) * stds) + coords
         Y = self.projection_manifold(Y)
         return Y
     
     @abstractmethod
     def plot_samples(self, Y, X, depthshade=True):
-        """Represents samples on the manifold
+        """Represents samples on the manifold.
         
         Args:
             Y (Tensor): Shape (M, N, *ms). Target measures.
@@ -141,14 +167,14 @@ class SlicedManifold(Manifold):
 
     @abstractmethod
     def operator(self, psis, samples):
-        """Projects the samples on the 1D axes corresponding to the different psis
+        """Projects the samples on the 1D axes corresponding to the different psis.
 
         Args:
-            psis (Tensor): Shape (n, *ms) where ms is the shape of the elements of the manifold
-            samples (Tensor): Shape (*Ns, *ms) where Ns is a any shape, and prod(Ns) gives the number of samples
+            psis (Tensor): Shape (n, *ms) where ms is the shape of the elements of the manifold.
+            samples (Tensor): Shape (*bs, *ms) where bs is the batch size.
         
         Returns:
-            projections (Tensor): Shape (*Ns, n)
+            projections (Tensor): Shape (*bs, n).
         """
         pass
     
@@ -158,16 +184,16 @@ class SlicedManifold(Manifold):
         gardient_factor * psi.
 
         Args:
-            psis (Tensor): Shape (n, *ms) where ms is the shape of the elements of the manifold
-            samples (Tensor): Shape (*Ns, *ms) where Ns is any shape, and prod(Ns) gives the number of samples
+            psis (Tensor): Shape (n, *ms) where ms is the shape of the elements of the manifold.
+            samples (Tensor): Shape (*bs, *ms) where bs is the batch size.
         
         Returns:
-            gradient_factors (Tensor): Shape (*Ns, n) or broadcastable to it
+            gradient_factors (Tensor): Shape (*bs, n) or broadcastable to it.
         """
         pass
 
 class ScaManifold(SlicedManifold):
-    """Abstract class computing Sliced Wasserstein Barycentres, using the scalar product as operator 
+    """Class computing Sliced Wasserstein Barycentres, using the scalar product as operator 
     projecting the measures to the real line and can compute the stochastic gradient descent loop 
     giving the corresponding sliced Wasserstein barycentre.
 
@@ -177,14 +203,14 @@ class ScaManifold(SlicedManifold):
         super().__init__()
     
     def operator(self, psis, samples):
-        """Projects the samples on the 1D axes corresponding to the different psis
+        """Projects the samples on the 1D axes corresponding to the different psis.
 
         Args:
-            psis (Tensor): Shape (n, *ms) where ms is the shape of the elements of the manifold
-            samples (Tensor): Shape (*Ns, *ms) where Ns is a any shape, and prod(Ns) gives the number of samples
+            psis (Tensor): Shape (n, *ms) where ms is the shape of the elements of the manifold.
+            samples (Tensor): Shape (*bs, *ms) where bs is the batch size.
         
         Returns:
-            projections (Tensor): Shape (*Ns, n)
+            projections (Tensor): Shape (*bs, n).
         """
         return torch.tensordot(samples, psis, dims=((self.dim_range), (self.dim_range))) # simple scalar product of every pair of vector
     
@@ -193,11 +219,12 @@ class ScaManifold(SlicedManifold):
         gardient_factor * psi.
 
         Args:
-            psis (Tensor): Shape (n, *ms) where ms is the shape of the elements of the manifold
-            samples (Tensor): Shape (*Ns, *ms) where Ns is any shape, and prod(Ns) gives the number of samples
+            psis (Tensor): Shape (n, *ms) where ms is the shape of the elements of the manifold.
+            samples (Tensor): Shape (*bs, *ms) where bs is the batch size.
         
         Returns:
-            gradient_factors (Tensor): Shape (*Ns, n)
+            gradient_factors (Tensor): Shape (*bs, n) or broadcastable to it. In this sub class,
+                returns number 1.
         """
         return 1
 

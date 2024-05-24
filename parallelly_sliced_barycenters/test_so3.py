@@ -1,11 +1,12 @@
 import torch
 import matplotlib.pyplot as plt
+from torch import pi
 
 import time
-from utils import tqdm
+from utils import tqdm, USE_TQDM
 
 from src.so3 import SO3, ScaSO3, DistSO3
-from src.barycenters import LSWBarycenter
+from src.barycenters import LSWBarycenter, LWBarycenter
 from test import Test, logspace2_man
 
 import sys
@@ -27,11 +28,21 @@ def expe(Y, n_Qs=1000, max_iter=1000, X0=None, lambdas=None, tau=0.5):
     plt.show()
 
 def generate_measures_set(distri, N):
+    """Generates samples for a given setting of input measures.
+
+    Args:
+        distri (str): the setting to be generated. Among "projected gaussains", "lines", 
+            "cuboids", "distant vmf", "close vmf", "line vmf".
+        N (int | tuple): Number of samples. If tuple, must have form (Nx, [Ny0, Ny1]) 
+            with Nx the number of samples in the barycentre, Ny0 the number of samples in the 
+            first input measure and Ny1 the number of samples in the second input measure.
+
+    Returns:
+        Tensor | list: the input measures. Is Tensor iff N is int. Else, returns a list with the two input measures (as samples) as Tensor.
+    """
     # N: int or tuple (Nx, list [Nx_j for j])
     so3 = SO3()
-    X_cand = None
     gnrl = type(N)== tuple
-    pi = torch.pi
     if gnrl:
         Nx = N[0]
         Nys = N[1]
@@ -40,42 +51,68 @@ def generate_measures_set(distri, N):
         Nys = [N, N]
 
     #TODO: GENERALISE
-    if distri == 1:
-        # First attempt
+    if distri == "projected gaussians":
         R0 = torch.eye(3)
         th = torch.tensor(pi/4)
         R1 = torch.tensor([[1, 0, 0], [0, torch.cos(th), -torch.sin(th)], [0, torch.sin(th), torch.cos(th)]])
         coords = torch.stack([R0, R1])
         stds = torch.tensor([0.1, 0.1])
-        Y = so3.sample_projected_gaussian(coords, stds, N)
+        if gnrl:
+            Y = [so3.sample_projected_gaussian(coords[j], stds[j], Nys[j]) for j in range(2)]
+        else:
+            Y = so3.sample_projected_gaussian(coords, stds, N)
 
-    elif distri == 2:
-        # Second attempt
-        R0 = so3.cano_angle_to_matrix(0, torch.tensor(0))
-        R1 = so3.cano_angle_to_matrix(0, torch.tensor(pi/4))
-        Y0 = so3.sample_uniform_portion(torch.tensor([[0, 2*pi], [0, pi/16], [7/8*pi, 9/8*pi]]), N)
-        Y = torch.stack([R0 @ Y0, R1 @ Y0])
+    elif distri == "lines": # two lines rotated by an angle of pi/2
+        Y0 = so3.sample_uniform_portion(torch.tensor([[3/8*pi, 5/8*pi], [pi/2, pi/2], [pi, pi]]), Nys[0])
+        Y1 = so3.sample_uniform_portion(torch.tensor([[7/8*pi, 9/8*pi], [pi/2, pi/2], [pi, pi]]), Nys[1])
+        if gnrl:
+            Y = [Y0, Y1]
+        else:
+            Y = torch.stack([Y0, Y1])
+        # X_cand = so3.sample_uniform_portion(torch.tensor([[5/8*pi, 7/8*pi], [pi/2, pi/2], [pi, pi]]), Nx)
 
-    elif distri == 3:
-        # Third attempt
-        Y0 = so3.sample_uniform_portion(torch.tensor([[3/8*pi, 5/8*pi], [pi/2, pi/2], [pi, pi]]), N)
-        Y1 = so3.sample_uniform_portion(torch.tensor([[7/8*pi, 9/8*pi], [pi/2, pi/2], [pi, pi]]), N)
-        Y = torch.stack([Y0, Y1])
-        X_cand = so3.sample_uniform_portion(torch.tensor([[5/8*pi, 7/8*pi], [pi/2, pi/2], [pi, pi]]), N)
-
-    elif distri == 4:
+    elif distri == "cuboids": # two cuboids rotated by an angle of pi/2
         # Fourth attempt
-        Y0 = so3.sample_uniform_portion(torch.tensor([[23/16*pi, 25/16*pi], [pi*3/8, pi*5/8], [pi*3/4, pi*5/4]]), N)
-        Y1 = so3.sample_uniform_portion(torch.tensor([[31/16*pi, 33/16*pi], [pi*3/8, pi*5/8], [pi*3/4, pi*5/4]]), N)
-        Y = torch.stack([Y0, Y1])
-        X_cand = so3.sample_uniform_portion(torch.tensor([[27/16*pi, 29/16*pi], [pi*3/8, pi*5/8], [pi*3/4, pi*5/4]]), N)
+        Y0 = so3.sample_uniform_portion(torch.tensor([[23/16*pi, 25/16*pi], [pi*3/8, pi*5/8], [pi*3/4, pi*5/4]]), Nys[0])
+        Y1 = so3.sample_uniform_portion(torch.tensor([[31/16*pi, 33/16*pi], [pi*3/8, pi*5/8], [pi*3/4, pi*5/4]]), Nys[0])
+        if gnrl:
+            Y = [Y0, Y1]
+        else:
+            Y = torch.stack([Y0, Y1])
+        # X_cand = so3.sample_uniform_portion(torch.tensor([[27/16*pi, 29/16*pi], [pi*3/8, pi*5/8], [pi*3/4, pi*5/4]]), Nx)
         
-    elif distri == 5:
+    elif distri == "distant vmf":
         coords = so3.parametrisation(torch.tensor([[3*pi/4, 6*pi/4], [4*pi/8, 5*pi/8], [5*pi/4, 3*pi/4]]))
-        Y = so3.sample_vMF_quat(coords, 100., N)
-        #X_cand = so3.sample_vMF_quat(so3.parametrisation(torch.tensor([9*pi/8, 9*pi/16, pi/2])), 100., N)
+        dist = torch.acos((torch.trace(torch.matmul(coords[0,:,:].transpose(0,1),coords[1,:,:])) - 1) / 2)
+        print(distri, dist.item())
+        # TODO: change so that batch size comes first, to be coherent with sphere.
+        if gnrl:
+            Y = [so3.sample_vMF_quat(coords[j], 100., Nys[j]) for j in range(2)]
+        else:
+            Y = so3.sample_vMF_quat(coords, 100., N)
+        #X_cand = so3.sample_vMF_quat(so3.parametrisation(torch.tensor([9*pi/8, 9*pi/16, pi/2])), 100., Nx)
+    
+    elif distri == "close vmf":
+        coords = so3.parametrisation(torch.tensor([[3*pi/4, 5*pi/4], [4*pi/8, 5*pi/8], [pi, pi]]))
+        dist = torch.acos((torch.trace(torch.matmul(coords[0,:,:].transpose(0,1),coords[1,:,:])) - 1) / 2)
+        print(distri, dist.item())
+        # TODO: change so that batch size comes first, to be coherent with sphere.
+        if gnrl:
+            Y = [so3.sample_vMF_quat(coords[j], 300., Nys[j]) for j in range(2)]
+        else:
+            Y = so3.sample_vMF_quat(coords, 300., N)
+    
+    elif distri == "line vmf":
+        Y0 = so3.sample_uniform_portion(torch.tensor([[0, 2*pi], [2*pi/8, 4*pi/8], [6*pi/8, 8*pi/8]]), N)
+        # coords = so3.parametrisation(torch.tensor([pi, 6*pi/8, 12*pi/8]))
+        coords = so3.parametrisation(torch.tensor([0, 5*pi/8, 14*pi/8]))
+        Y1 = so3.sample_vMF_quat(coords, 300, N)
+        if gnrl:
+            Y = [Y0, Y1]
+        else:
+            Y = torch.stack([Y0, Y1])
 
-    return Y, X_cand
+    return Y
 
 
 def compare_dist_sca(N=13, n_Qs = 200, max_iter=1000, eps=1e-1, **kwargs):
@@ -85,10 +122,11 @@ def compare_dist_sca(N=13, n_Qs = 200, max_iter=1000, eps=1e-1, **kwargs):
     dist_so3 = DistSO3(eps=eps)
     swbd = LSWBarycenter(dist_so3)
 
-    Y, X_cand = generate_measures_set(4, N)
+    # Y, X_cand = generate_measures_set("distant vmf", N)
+    Y = generate_measures_set("distant vmf", N)
     M = Y.shape[0]
     psis_cand = sca_so3.sample_uniform(n_Qs)
-    _, obj_cand = swbs.functional_grad(psis_cand, X_cand, Y, 1/M * torch.ones((M,)))
+    # _, obj_cand = swbs.functional_grad(psis_cand, X_cand, Y, 1/M * torch.ones((M,)))
 
     X0 = sca_so3.sample_uniform(N)
     sca_so3.plot_samples(Y, X0)
@@ -96,7 +134,7 @@ def compare_dist_sca(N=13, n_Qs = 200, max_iter=1000, eps=1e-1, **kwargs):
     swbs.fit(Y, None, X0, n_psis=n_Qs, tau_init=1, max_iter=max_iter, **kwargs)
     swbs.plot_samples()
 
-    _, obj_cand2 = swbd.functional_grad(psis_cand, X_cand, Y, 1/M * torch.ones((M,)))
+    # _, obj_cand2 = swbd.functional_grad(psis_cand, X_cand, Y, 1/M * torch.ones((M,)))
     swbd.fit(Y, None, X0, n_psis=n_Qs, tau_init=1, max_iter=max_iter, **kwargs)
     swbs.plot_samples()
 
@@ -104,21 +142,37 @@ def compare_dist_sca(N=13, n_Qs = 200, max_iter=1000, eps=1e-1, **kwargs):
     plt.plot(swbd.it_save_range, [swbs.functional_grad(psis_cand, X, Y, torch.ones((M,))/M)[1] for X in swbd.L])
     for i in range(50):
         plt.axhline(1/4 * swbs.sliced_dist_square(sca_so3.sample_uniform(n_Qs), Y[0], Y[1]), c="r", lw=0.2)
-    plt.axhline(obj_cand, c="g")
+    # plt.axhline(obj_cand, c="g")
     plt.show()
 
     plt.plot(swbs.it_save_range, [swbd.functional_grad(psis_cand, X, Y, torch.ones((M,))/M)[1] for X in swbs.L])
     plt.plot(swbd.L_loss)
     for i in range(50):
         plt.axhline(1/4 * swbd.sliced_dist_square(sca_so3.sample_uniform(n_Qs), Y[0], Y[1]), c="r", ls="--", lw=0.2)
-    plt.axhline(obj_cand2, c="g", ls="--")
+    # plt.axhline(obj_cand2, c="g", ls="--")
     plt.show()
 
     plt.plot(swbs.L_step)
     plt.plot(swbd.L_step)
     plt.show()
     
-def test_barycenter2(N=13, n_Qs = 200, max_iter=1000, dist_proj=False, tau=1., eps=1e-1, **kwargs):
+def test_barycenter2(input_measures = "distant vmf", N=50, n_psis = 200, max_iter=1000, slicing_operator_arcos=False, tau=1., eps=1e-1, compare_w=False, **kwargs):
+    """Computes the barycentre of two given input measures (among a restricted set of possibilities), plot the results,
+    and the convergence graph.
+
+    Args:
+        input_measures (str, optional): Input setting, among the different possible parameters of generate_measure_set. Defaults to "distant vmf".
+        N (int, optional): Number of samples. If a tuple, it must be of the form (Nx, [Ny_j for j]) with Nx the number of sample in the barycentre,
+            and Ny_j the number of sample in each input measure j. Defaults to 50.
+        n_psis (int, optional): Number of slices. Defaults to 200.
+        max_iter (int, optional): Maximum number of iteration in the gradient descent algorithm. Defaults to 1000.
+        slicing_operator_arcos (bool, optional): Whether to use the distance on SO3 as slicing operator, or simply the scalar product. 
+            Defaults to False.
+        tau (float, optional): Step size of the gradient descent algorithm. Defaults to 1..
+        eps (float, optional): Parameter epsilon used for the slicing operator with distance on SO3. Ignored if slicing_operator_arcos is False. 
+            Defaults to 1e-1.
+        compare_w (bool, optional): Whether to compare the shape with the true Wasserstein barycenter. Default to False
+    """
     # N: int or tuple (Nx, list [Nx_j for j])
     gnrl = type(N)== tuple
     if gnrl:
@@ -126,63 +180,38 @@ def test_barycenter2(N=13, n_Qs = 200, max_iter=1000, dist_proj=False, tau=1., e
     else:
         Nx = N
     
-    if dist_proj == True:
+    if slicing_operator_arcos:
         sman = DistSO3(eps=eps)
     else:
         sman = ScaSO3()
     swb = LSWBarycenter(sman)
 
-    Y, X_cand = generate_measures_set(5, N)
+    Y = generate_measures_set(input_measures, N)
     M = len(Y)
 
-    if X_cand is not None and not gnrl:
-        psis_cand = sman.sample_uniform(n_Qs)
-        _, obj_cand = swb.functional_grad(psis_cand, X_cand, Y, 1/M * torch.ones((M,)))
-
     X0 = sman.sample_uniform(Nx)
-    sman.plot_samples(Y, X0)
+    sman.plot_samples(Y, X0, figname="so3 " + input_measures + " init") # title="Initialisation", 
 
-    swb.fit(Y, None, X0, n_psis=n_Qs, tau_init=tau, max_iter=max_iter, **kwargs)
-    swb.plot_samples()
+    swb.fit(Y, None, X0, n_psis=n_psis, tau_init=tau, max_iter=max_iter, **kwargs)
+    swb.plot_samples(figname="so3 " + input_measures + " sw") # title="Parallely sliced Wasserstein barycenter",
 
-    plt.plot(swb.L_loss)
-    for i in range(50):
-        plt.axhline(1/4 * swb.sliced_dist_square(sman.sample_uniform(n_Qs), Y[0], Y[1]), c="r", lw=0.2)
-    if X_cand is not None and not gnrl:
-        plt.axhline(obj_cand, c="g")
-    plt.show()
+    if compare_w:
+        wb = LWBarycenter(sman)
+        wb.fit(Y, None)
+        wb.plot_samples(figname="so3 " + input_measures + " w") #title="Wasserstein barycenter",
 
-    plt.plot(swb.L_step)
-    plt.show()
+    # plt.plot(swb.L_loss)
+    # plt.xlabel("Iteration")
+    # plt.ylabel("Loss")
+    # plt.grid()
+    # plt.show()
 
-def test_sliced_barycenter3(N=13, n_Qs = 200, max_iter=1000):
-    sca_so3 = ScaSO3()
-    swb = LSWBarycenter(sca_so3)
+    # plt.plot(swb.L_step)
+    # plt.xlabel("Iteration")
+    # plt.ylabel("Step diff")
+    # plt.grid()
+    # plt.show()
 
-    pi = torch.pi
-    Y0 = sca_so3.sample_uniform_portion(torch.tensor([[23/16*pi, 25/16*pi], [pi*3/8, pi*5/8], [pi*3/4, pi*5/4]]), N)
-    Y1 = sca_so3.sample_uniform_portion(torch.tensor([[31/16*pi, 33/16*pi], [pi*3/8, pi*5/8], [pi*3/4, pi*5/4]]), N)
-    Y2 = sca_so3.sample_uniform_portion(torch.tensor([[0, 2*pi], [0, pi/8], [pi*3/4, pi*5/4]]), N)
-    Y = torch.stack([Y0, Y1, Y2])
-    M = Y.shape[0]
-    X_cand = sca_so3.sample_uniform_portion(torch.tensor([[27/16*pi, 29/16*pi], [pi*3/8, pi*5/8], [pi*3/4, pi*5/4]]), N)
-    _, obj_cand = swb.functional_grad(sca_so3.sample_uniform(n_Qs), X_cand, Y, 1/M * torch.ones((M,)))
-    X0 = sca_so3.sample_uniform_portion(torch.tensor([[11/16*pi, 13/16*pi], [pi*4/8, pi*6/8], [pi*4/4, pi*6/4]]), N)
-
-    X0 = sca_so3.sample_uniform(N)
-    sca_so3.plot_samples(Y, X0)
-
-    swb.fit(Y, None, X0, n_psis=n_Qs, tau_init=1, max_iter=max_iter)
-    swb.plot_samples()
-
-    plt.plot(swb.L_loss)
-    for i in range(50):
-        plt.axhline(1/4 * swb.sliced_dist_square(sca_so3.sample_uniform(n_Qs), Y[0], Y[1]), c="r", lw=0.5)
-    plt.axhline(obj_cand, c="g")
-    plt.show()
-
-    plt.plot(swb.L_step)
-    plt.show()
 
 ###################################################################################
 
@@ -308,9 +337,27 @@ class SO3AccuTest(Test):
 ######################################################################################
 
 if __name__ == "__main__":
-    # compare_dist_sca(N=30, n_Qs=200, max_iter=1000, eps=1e-1)
-    test_barycenter2(N=200, n_Qs=500, max_iter=1000, dist_proj=True, tau=50., eps=1e-1)
+    from argparse import ArgumentParser
 
-    # so3 = SO3()
-    # Y = so3.sample_vMF_quat([torch.eye(3), so3.axis_angle_to_matrix(torch.tensor([1, 0, 0], dtype=torch.float), torch.tensor(torch.pi*2/3))], [150, 150], 100)
-    # so3.plot_samples(Y)
+    parser = ArgumentParser()
+    parser.add_argument("-t", "--test-name", type=str, default="visual",
+                        help="Name of test to launch. Can be 'visual', 'tau', 'tau_decl', 'tau_dece', 'convergence', 'time', 'shape', 'epsb', 'benchmark'. Defaults to 'visual'.")
+    parser.add_argument("-w", "--without-tqdm", action="store_true",
+                        help="Prevent tqdm bars")
+    args = parser.parse_args()
+    test_name = args.test_name
+    USE_TQDM[0] = not args.without_tqdm
+
+    if test_name == "shape":
+        test_barycenter2(input_measures="distant vmf", N=100, n_psis=500, max_iter=1000, slicing_operator_arcos=True, tau=50., compare_w=True)
+        test_barycenter2(input_measures="close vmf"  , N=100, n_psis=500, max_iter=1000, slicing_operator_arcos=True, tau=50., compare_w=True)
+        test_barycenter2(input_measures="line vmf"   , N=300, n_psis=500, max_iter=1000, slicing_operator_arcos=True, tau=50., compare_w=True)
+
+    # elif test_name == "compare_slicing_operator":
+    #     compare_dist_sca(N=30, n_Qs=200, max_iter=1000, eps=1e-1)
+
+
+    else:
+        print("Test name not recognised")
+
+

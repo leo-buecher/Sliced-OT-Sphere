@@ -18,8 +18,13 @@ class SSWBarycenter(LSWBarycenter):
         presented at the The Eleventh International Conference on Learning Representations, Sep. 2022. \
         Available: https://openreview.net/forum?id=jXQ0ipgMdU
     """
-    def __init__(self):
-        super().__init__(sman=None)
+    def __init__(self, sman=None):
+        """
+        Args:
+            sman (SlicedManifold, optional): Unnecessary for computations, but can be used for other methods, such as plot. 
+                Defaults to None.
+        """
+        super().__init__(sman)
 
     def fit(self, Y, lambdas, X0=None, n_psis=500, tau_init=100, max_iter=1000, exp=True, a_tau=1, pow_tau=0, tqdm_leave=True, stop=True):
         """Computes the barycenter of measures in Y.
@@ -28,7 +33,8 @@ class SSWBarycenter(LSWBarycenter):
             Y (Tensor | list): contains M tensors of sizes (Nj, 3) which are samples of 
                 the measures we want to compute the barycentre of
 
-            lambdas (Tensor): size (M,). Coefficients for the different measures in the barycentre.
+            lambdas (Tensor | None): size (M,). Coefficients for the different measures in the barycentre.
+                If None, set to torch.ones((M,)).
             X0 (Tensor, optional): size (N, 2). Initial sample. Defaults to None.
             max_iter (int, optional): Number of iteration. Defaults to 1000.
             n_psis (int, optional): Number of slices (projections). Defaults to 500.
